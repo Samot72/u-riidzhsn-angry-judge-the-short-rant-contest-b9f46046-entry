@@ -4,7 +4,7 @@
 // (default /output). Gate: UTF-8 text, 1-400 characters (code points),
 // not only whitespace.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Shelf of candidate rants. Each is one concrete annoyance, escalated with
@@ -15,10 +15,20 @@ const CANDIDATES: readonly string[] = [
   "Dave from accounts says \u201Ccircling back\u201D the way sharks circle swimmers. He circled back on Tuesday, circled back on Thursday, and by Friday he had circled back so hard he lapped himself and asked me the same question twice in one email.",
 ];
 
-// The gate, in code points (not UTF-16 units, not bytes).
+// The gate, in code points (not UTF-16 units, not bytes). Also requires a
+// clean UTF-8 round-trip: encoding then decoding must reproduce the text
+// exactly, so no lone surrogate or invalid sequence can slip through.
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: true });
+
 function isValid(text: string): boolean {
   const points = [...text].length;
-  return points >= 1 && points <= 400 && text.trim().length > 0;
+  if (points < 1 || points > 400 || text.trim().length === 0) return false;
+  try {
+    return decoder.decode(encoder.encode(text)) === text;
+  } catch {
+    return false;
+  }
 }
 
 function main(): void {
@@ -34,6 +44,22 @@ function main(): void {
   const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, "entry.txt");
+
+  // Determinism self-check: write the rant twice to scratch files and
+  // require byte-identical results before writing the real output. A
+  // nondeterministic pick would fail loudly here instead of shipping.
+  const scratchA = join(outDir, ".entry.check-a");
+  const scratchB = join(outDir, ".entry.check-b");
+  writeFileSync(scratchA, rant, "utf8");
+  writeFileSync(scratchB, rant, "utf8");
+  const bytesA = readFileSync(scratchA);
+  const bytesB = readFileSync(scratchB);
+  if (!bytesA.equals(bytesB)) {
+    throw new Error("determinism check failed: two writes differ");
+  }
+  rmSync(scratchA);
+  rmSync(scratchB);
+
   writeFileSync(outPath, rant, "utf8");
 
   // Re-read and verify what landed on disk, byte for byte.
